@@ -235,5 +235,44 @@ describe('OrganisationInviteService', () => {
                 OrganisationInviteService.acceptInvite({ token: invite.token, userId: 'u', userEmail: 'other@example.com' })
             ).rejects.toMatchObject({ message: 'Invite email does not match authenticated user.' })
         })
+
+        it('throws OrganisationInviteServiceError when associating user to organisation fails', async () => {
+            const invite = createMockInvite()
+            const org = { _id: new Types.ObjectId(), name: 'Org Name' }
+            const dept = { _id: new Types.ObjectId() }
+
+            mockedInviteModel.findOne.mockImplementationOnce(() => ({ setOptions: () => Promise.resolve(invite) }))
+            mockedOrgModel.findOne.mockImplementationOnce(() => ({ setOptions: () => Promise.resolve(org) }))
+            mockedSpecialityModel.findOne.mockImplementationOnce(() => ({ setOptions: () => Promise.resolve(dept) }))
+
+            // simulate unexpected error from UserOrganizationService
+            mockedUserOrg.createUserOrganizationMapping.mockRejectedValueOnce(new Error('connection failed'))
+
+            await expect(
+                OrganisationInviteService.acceptInvite({ token: invite.token, userId: 'user-42', userEmail: invite.inviteeEmail })
+            ).rejects.toMatchObject({ message: 'Unable to associate user with organisation.', statusCode: 500 })
+        })
+
+        it('skips duplicate-key error when associating user to organisation and proceeds', async () => {
+            const invite = createMockInvite()
+            const org = { _id: new Types.ObjectId(), name: 'Org Name' }
+            const dept = { _id: new Types.ObjectId() }
+
+            mockedInviteModel.findOne.mockImplementationOnce(() => ({ setOptions: () => Promise.resolve(invite) }))
+            mockedOrgModel.findOne.mockImplementationOnce(() => ({ setOptions: () => Promise.resolve(org) }))
+            mockedSpecialityModel.findOne.mockImplementationOnce(() => ({ setOptions: () => Promise.resolve(dept) }))
+
+            // simulate duplicate key error coming from underlying createUserOrganizationMapping
+            const duplicateError: any = new Error('duplicate')
+            duplicateError.code = 11000
+            mockedUserOrg.createUserOrganizationMapping.mockRejectedValueOnce(duplicateError)
+            mockedSpecialityModel.updateOne.mockResolvedValueOnce({})
+
+            const result = await OrganisationInviteService.acceptInvite({ token: invite.token, userId: 'user-42', userEmail: invite.inviteeEmail })
+
+            expect(invite.save).toHaveBeenCalled()
+            expect(mockedSpecialityModel.updateOne).toHaveBeenCalled()
+            expect(result).toHaveProperty('_id')
+        })
     })
 })
